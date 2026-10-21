@@ -20,6 +20,8 @@ import {
   buildPrompt,
   normalizeConfig,
   sanitizeCompletion,
+  sanitizePartial,
+  textOfContent,
   transcriptOf,
   transcriptOfMessages,
   echoesAssistant,
@@ -34,6 +36,11 @@ const CACHE_LIMIT = 64
 const CACHE_TTL_MS = 2 * 60 * 1000
 const MISS_TTL_MS = 20 * 1000
 const MIN_INTERVAL_MS = 120
+
+function wantsStream(req) {
+  const accept = req.headers !== undefined ? req.headers.accept : undefined
+  return typeof accept === 'string' && accept.indexOf('text/event-stream') !== -1
+}
 
 function sendJson(res, status, body) {
   res.statusCode = status
@@ -73,8 +80,27 @@ function tailOf(url) {
   return path.replace(new RegExp('^' + ROUTE + '/?'), '') || 'state'
 }
 
-/** Loopback only: this endpoint spends money, so it is not a LAN service. */
-function isLoopback(req) {
+/** Value of one query parameter, decoded, or '' when absent. */
+function queryOf(url, key) {
+  const raw = String(url || '')
+  const mark = raw.indexOf('?')
+  if (mark === -1) return ''
+  const pairs = raw.slice(mark + 1).split('&')
+  for (const pair of pairs) {
+    const split = pair.indexOf('=')
+    const name = split === -1 ? pair : pair.slice(0, split)
+    if (name !== key) continue
+    const value = split === -1 ? '' : pair.slice(split + 1)
+    try {
+      return decodeURIComponent(value)
+    } catch (error) {
+      return value
+    }
+  }
+  return ''
+}
+
+/** Loopback only: this endpoint spends money, so it is not a LAN service. */function isLoopback(req) {
   const address = req.socket === undefined || req.socket === null ? '' : String(req.socket.remoteAddress || '')
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
 }
@@ -239,7 +265,7 @@ export function apply(ctx, rawConfig) {
    * exactly the same prompt and sanitising.
    * @returns {Promise<{ completion: string, raw: string }>}
    */
-  async function complete(input) {
+  async function complete(input, onDelta) {
     const llm = safeGet('llm')
     if (llm === undefined || typeof llm.stream !== 'function') {
       throw new Error('å®¿ä¸»æ²¡æœ‰å¯ç”¨çš„ llm æœåŠ¡')
@@ -267,7 +293,11 @@ export function apply(ctx, rawConfig) {
       for await (const chunk of stream) {
         if (chunk === null || typeof chunk !== 'object') continue
         if (chunk.type === 'text-delta') {
-          raw += typeof chunk.text === 'string' ? chunk.text : ''
+          const piece = typeof chunk.text === 'string' ? chunk.text : ''
+          if (piece.length > 0) {
+            raw += piece
+            if (typeof onDelta === 'function') onDelta(raw)
+          }
         } else if (chunk.type === 'finish' && chunk.reason !== null && typeof chunk.reason === 'object' && chunk.reason.kind === 'error') {
           const failure = chunk.reason.failure
           throw new Error(failure !== undefined && typeof failure.message === 'string' ? failure.message : '模型调用失败')
@@ -291,11 +321,54 @@ export function apply(ctx, rawConfig) {
     const sessionId = asText(body.sessionId)
     const draft = asText(body.draft)
 
+    // A prediction that arrives in one lump is a prediction the user has
+    // already outtyped. Stream the deltas and let the ghost grow with them.
+    let sse = null
+    if (wantsStream(req)) {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-store',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+      })
+      if (typeof res.flushHeaders === 'function') res.flushHeaders()
+      let closed = false
+      res.on('close', function () {
+        closed = true
+      })
+      sse = {
+        event: function (payload) {
+          if (closed) return
+          try {
+            res.write('data: ' + JSON.stringify(payload) + '\n\n')
+          } catch (error) {
+            closed = true
+          }
+        },
+        end: function () {
+          if (closed) return
+          closed = true
+          try {
+            res.end()
+          } catch (error) {
+            // ignore
+          }
+        },
+      }
+    }
+
+    function out(payload) {
+      if (sse === null) return sendJson(res, 200, payload)
+      sse.event(payload)
+      sse.end()
+      return undefined
+    }
+
     state.requests += 1
     state.lastSession = sessionId
-    if (!state.enabled) return sendJson(res, 200, { ok: false, reason: 'disabled' })
-    if (draft.length > MAX_DRAFT) return sendJson(res, 200, { ok: false, reason: 'draft-too-long' })
-    if (draft.length < config.minDraftChars) return sendJson(res, 200, { ok: false, reason: 'draft-too-short' })
+    if (!state.enabled) return out({ ok: false, reason: 'disabled' })
+    if (draft.length > MAX_DRAFT) return out({ ok: false, reason: 'draft-too-long' })
+    if (draft.length < config.minDraftChars) return out({ ok: false, reason: 'draft-too-short' })
 
     const started = Date.now()
     const transcript = transcriptFor(sessionId)
@@ -305,7 +378,7 @@ export function apply(ctx, rawConfig) {
     if (draft.trim().length === 0 && transcript.length === 0) {
       state.empty += 1
       state.lastReason = 'no-context'
-      return sendJson(res, 200, { ok: false, reason: 'no-context', types: eventTypes(sessionId), messages: messageDigest(sessionId) })
+      return out({ ok: false, reason: 'no-context', types: eventTypes(sessionId), messages: messageDigest(sessionId) })
     }
 
     const key = sessionId + '\u0000' + draft
@@ -313,7 +386,7 @@ export function apply(ctx, rawConfig) {
     if (cached !== undefined) {
       state.cacheHits += 1
       state.completions += 1
-      return sendJson(res, 200, {
+      return out({
         ok: true,
         completion: cached,
         cached: true,
@@ -325,7 +398,7 @@ export function apply(ctx, rawConfig) {
     if (missGet(key)) {
       state.empty += 1
       state.lastReason = 'miss'
-      return sendJson(res, 200, { ok: false, reason: 'miss', cached: true })
+      return out({ ok: false, reason: 'miss', cached: true })
     }
 
     // One in-flight call per session: a stale request must not race the fresh one.
@@ -344,9 +417,18 @@ export function apply(ctx, rawConfig) {
     if (wait > 0) await new Promise(function (resolve) { setTimeout(resolve, wait) })
     lastCallAt = Date.now()
 
+    let shown = ''
+    function onDelta(text) {
+      if (sse === null) return
+      const partial = sanitizePartial(text, config.maxCompletionChars)
+      if (partial.length === 0 || partial === shown) return
+      shown = partial
+      sse.event({ delta: partial })
+    }
+
     try {
       const result = await Promise.race([
-        complete({ draft: draft, transcript: transcript }),
+        complete({ draft: draft, transcript: transcript }, onDelta),
         new Promise(function (_resolve, reject) {
           gate.signal.addEventListener('abort', function () {
             reject(new Error('aborted'))
@@ -357,21 +439,21 @@ export function apply(ctx, rawConfig) {
         missPut(key)
         state.empty += 1
         state.lastReason = 'empty'
-        return sendJson(res, 200, { ok: false, reason: 'empty', raw: result.raw.slice(0, 200), types: eventTypes(sessionId), messages: messageDigest(sessionId) })
+        return out({ ok: false, reason: 'empty', raw: result.raw.slice(0, 200), types: eventTypes(sessionId), messages: messageDigest(sessionId) })
       }
       if (draft.trim().length === 0 && echoesAssistant(result.completion, transcript)) {
         // The model summarised the assistant instead of predicting the user.
         missPut(key)
         state.empty += 1
         state.lastReason = 'echo'
-        return sendJson(res, 200, { ok: false, reason: 'echo', raw: result.raw.slice(0, 200) })
+        return out({ ok: false, reason: 'echo', raw: result.raw.slice(0, 200) })
       }
       cachePut(key, result.completion)
       state.completions += 1
       state.lastMs = Date.now() - started
       state.lastError = ''
       state.lastReason = ''
-      return sendJson(res, 200, {
+      return out({
         ok: true,
         completion: result.completion,
         ms: state.lastMs,
@@ -380,17 +462,16 @@ export function apply(ctx, rawConfig) {
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      if (message === 'aborted') return sendJson(res, 200, { ok: false, reason: 'aborted' })
+      if (message === 'aborted') return out({ ok: false, reason: 'aborted' })
       state.failures += 1
       state.lastError = message
-      return sendJson(res, 200, { ok: false, reason: 'error', error: message })
+      return out({ ok: false, reason: 'error', error: message })
     } finally {
       if (inflight.get(sessionId) === gate) inflight.delete(sessionId)
     }
   }
 
-  function describe() {
-    return {
+  function describe() {    return {
       ok: true,
       plugin: { name: NAME, version: VERSION },
       config: {
@@ -433,6 +514,20 @@ export function apply(ctx, rawConfig) {
               return sendJson(res, 200, describe())
             }
             if (tail === 'suggest') return await suggest(req, res)
+            if (tail === 'transcript') {
+              if (!isLoopback(req)) return sendJson(res, 403, { ok: false, reason: 'loopback-only' })
+              const sessionId = queryOf(req.url, 'sessionId')
+              const transcript = transcriptFor(sessionId)
+              return sendJson(res, 200, {
+                ok: true,
+                sessionId: sessionId,
+                messages: transcript.length,
+                chars: transcript.reduce(function (total, entry) { return total + entry.text.length }, 0),
+                transcript: transcript,
+                digest: messageDigest(sessionId),
+                events: eventTypes(sessionId),
+              })
+            }
             return sendJson(res, 404, { ok: false, reason: 'unknown-method' })
           } catch (error) {
             state.failures += 1

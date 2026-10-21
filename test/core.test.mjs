@@ -7,6 +7,7 @@ import {
   joinCompletion,
   normalizeConfig,
   sanitizeCompletion,
+  sanitizePartial,
   textOfContent,
   transcriptOf,
   transcriptOfMessages,
@@ -138,5 +139,19 @@ test('normalizeConfig clamps and defaults', () => {
 
   const fallback = normalizeConfig(null)
   assert.equal(fallback.enabled, true)
-  assert.equal(fallback.debounceMs, 550)
+  assert.equal(fallback.debounceMs, 280)
+})
+
+test('sanitizePartial is safe on a half-arrived stream', () => {
+  // A growing prefix must render as-is, character by character.
+  assert.equal(sanitizePartial('把这段逻辑'), '把这段逻辑')
+  // A newline ends the suggestion: a completion is one line, never a list.
+  assert.equal(sanitizePartial('把这段逻辑\n再展开讲'), '把这段逻辑')
+  // The prefix the model likes to add is not part of the text.
+  assert.equal(sanitizePartial('补全：封装成函数'), '封装成函数')
+  // A placeholder answer must not paint even for one frame.
+  assert.equal(sanitizePartial('空字符串'), '')
+  assert.equal(sanitizePartial('null'), '')
+  // Length is capped so a runaway stream cannot paint a wall of ghost text.
+  assert.equal(sanitizePartial('字'.repeat(200), 10), '字'.repeat(10))
 })

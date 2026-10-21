@@ -59,11 +59,11 @@ pnpm install
 - id: dsh-tab-complete
   config:
     enabled: true
-    debounceMs: 550        # 停手多久后请求
-    maxTokens: 48          # 生成上限
+    debounceMs: 280        # 停手多久后请求
+    maxTokens: 32          # 生成上限
     maxCompletionChars: 120
-    contextMessages: 8     # 送给模型的历史消息条数
-    contextChars: 2400
+    contextMessages: 6     # 送给模型的历史消息条数
+    contextChars: 1600
     minDraftChars: 0       # 空输入框也预测，设成 2 就要求先打两个字
     provider: ""           # 留空则用当前会话的默认模型路由
     model: ""
@@ -74,18 +74,34 @@ pnpm install
 ```powershell
 curl.exe http://127.0.0.1:3080/dsh-tab-complete/state       # 需要浏览器同款 cookie
 curl.exe -X POST http://127.0.0.1:3080/dsh-tab-complete/enabled -d '{\"enabled\":false}'
+curl.exe "http://127.0.0.1:3080/dsh-tab-complete/transcript?sessionId=<id>"   # 这次补全真正会发给模型的对话
 ```
+
+## 速度
+
+一次建议 = 静默时间（默认 280ms）+ 模型首 token 延迟。第二段来自模型本身，插件替不了它；所以补全走**流式**：第一个 token 到达就把幽灵画出来，之后逐字长出来，而不是等整句生成完再一次性出现。
+
+如果仍然嫌慢，把补全指到更快的模型上（不影响主会话）：
+
+```yaml
+- id: dsh-tab-complete
+  config:
+    provider: chenyuzhiyun
+    model: glm-5.3-flash
+```
+
+同一「会话 + 草稿」在缓存里命中是 0 延迟；`GET /dsh-tab-complete/state` 里的 `lastMs` 就是上一次真实耗时。
 
 ## 成本与隐私
 
-- 每次预测是一次独立的小模型调用（`maxTokens: 48`，一句话），**不写进会话记录**，也不消耗 Harness 的上下文。
+- 每次预测是一次独立的小模型调用（`maxTokens: 32`，一句话），**不写进会话记录**，也不消耗 Harness 的上下文。
 - 只接受来自 loopback 的请求；请求体上限 64 KB。
 - 同样的「会话 + 草稿」结果缓存 2 分钟；"模型也没想出来"缓存 20 秒，避免空输入框反复花钱。
 - 同一会话同时只保留一个在飞请求，新请求会中断旧的。
 
 ## 实现要点
 
-- 宿主：`ctx.webServer.register` 三条路由；`llm.stream` 一次性调用；历史取自 `session.deriveMessages()`（拿不到就退回事件日志的 `user/message` / `assistant/message`）。
+- 宿主：`ctx.webServer.register` 四条路由；`llm.stream` 边读边转发成 SSE；历史取自 `session.deriveMessages()`（拿不到就退回事件日志的 `user/message` / `assistant/message`）。
 - 客户端：`conversation.input.overlay` 插槽里的一个 0 高度覆盖层，绝对定位到测量出来的光标位置，字体、行高、字间距照抄编辑器，所以看起来就是「接下来要打的字」。
 - 落字走 `inputActions.insertText(text, span)`，带 `draftRev` 的 CAS：请求发出后你要是继续打字，这次补全就作废，不会插到错误的位置；CAS 失败再退回 `setDraft`。
 - <kbd>Tab</kbd> 在捕获阶段拦下并 `stopImmediatePropagation()`，编辑器的缩进逻辑看不到它，也不会误触发。

@@ -8,7 +8,7 @@
 //   - completion sanitising and caret joining.
 
 export const NAME = 'dsh-tab-complete'
-export const VERSION = '0.1.0'
+export const VERSION = '0.1.1'
 export const ROUTE = '/dsh-tab-complete'
 
 /** Every knob the plugin owns, with the shipped defaults. */
@@ -16,17 +16,17 @@ export const DEFAULT_CONFIG = Object.freeze({
   /** Master switch; false turns the route into a cheap no-op. */
   enabled: true,
   /** Idle time after the last keystroke before asking for a completion. */
-  debounceMs: 550,
+  debounceMs: 280,
   /** Empty composer is allowed; the host requires *some* conversation first. */
   minDraftChars: 0,
   /** Reply budget. A tab completion must stay short to feel instant. */
-  maxTokens: 48,
+  maxTokens: 32,
   temperature: 0.3,
   /** Hard ceiling for one suggestion, in characters. */
   maxCompletionChars: 120,
   /** Conversation tail fed to the model. */
-  contextMessages: 8,
-  contextChars: 2400,
+  contextMessages: 6,
+  contextChars: 1600,
   /** Request timeout. */
   timeoutMs: 9000,
   /** Optional explicit route; empty means "the session default model". */
@@ -286,6 +286,29 @@ export function sanitizeCompletion(raw, draft, maxChars) {
     text = text.replace(/\s+\S*$/, '').trim()
   }
   return text.length === 0 ? null : text
+}
+
+/**
+ * The same cleanup, but safe to run on a half-arrived stream: a partial
+ * completion is shown as it grows, so it must never carry a newline, a
+ * "补全：" prefix or an unbounded length into the composer.
+ * @param {string} raw
+ * @param {number} [maxChars]
+ * @returns {string}
+ */
+export function sanitizePartial(raw, maxChars) {
+  if (typeof raw !== 'string') return ''
+  const limit = Number.isInteger(maxChars) ? maxChars : DEFAULT_CONFIG.maxCompletionChars
+  let text = raw.split(/\r?\n/)[0]
+  text = text.replace(/^补全[:：]\s*/, '')
+  text = text.trimStart()
+  text = text.replace(LEADING_QUOTES, '')
+  if (PLACEHOLDER_ANSWER.test(text)) return ''
+  if (text.length > limit) {
+    text = text.slice(0, limit)
+    if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1)
+  }
+  return text
 }
 
 /**

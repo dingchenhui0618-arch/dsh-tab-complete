@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1
+
+- 补全改为流式：宿主用 `text/event-stream` 逐块吐 delta，客户端拿到第一个 token 就把幽灵文本画出来，而不是等整句生成完（对逐 token 上游是肉眼可见的加速；一次性返回的上游仍是整句落盘）。
+- 判断「该请求了」的静默时间从 550ms 降到 280ms；`maxTokens` 48 → 32，上下文 8 条 / 2400 字 → 6 条 / 1600 字，都在压首 token 前的等待。
+- 空输入框的幽灵文本改用编辑器的**内容盒**定位，不再用边框盒（此前整体左移约 14px、上移约 4px）。
+- 光标的落点改用「最后一个字形右边缘」计算：collapsed range 落在文本节点末尾时，某些引擎会报成最后一个字符的起点，幽灵就会压在最后一个字上。
+- 修正 `messageDigest` 里漏引入的 `textOfContent`（此前调试响应会直接报 `textOfContent is not defined`）。
+- 新增 `GET /dsh-tab-complete/transcript?sessionId=`：打印这次补全真正会发给模型的对话（loopback-only），排查「建议跑题」时先看它。
+
 ## 0.1.0
 
 - 输入框内的幽灵文本补全：停手 550ms 后用当前会话的模型路由预测接下来的输入，<kbd>Tab</kbd> 填入、<kbd>Esc</kbd> 忽略。
