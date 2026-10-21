@@ -1,0 +1,459 @@
+// Host half of dsh-tab-complete.
+//
+// One HTTP route, deliberately hand-rolled like the other local DSH plugins:
+//
+//   GET  /dsh-tab-complete/state    -> config + counters (panel/debug)
+//   POST /dsh-tab-complete/suggest  -> { sessionId, draft } => { completion }
+//   POST /dsh-tab-complete/enabled  -> { enabled } in-memory switch
+//
+// Everything is soft-read through `ctx.get(...)` so the plugin still loads on a
+// host without `llm` or `webServer`; the client half simply gets no completion.
+//
+// Security: the suggestion endpoint spends model tokens, so it only answers
+// loopback callers and only for a draft small enough to be a draft.
+
+import {
+  DEFAULT_CONFIG,
+  NAME,
+  ROUTE,
+  VERSION,
+  buildPrompt,
+  normalizeConfig,
+  sanitizeCompletion,
+  transcriptOf,
+  transcriptOfMessages,
+  echoesAssistant,
+} from './core.js'
+
+export const name = NAME
+export const inject = ['webServer']
+
+const MAX_BODY = 64 * 1024
+const MAX_DRAFT = 4000
+const CACHE_LIMIT = 64
+const CACHE_TTL_MS = 2 * 60 * 1000
+const MISS_TTL_MS = 20 * 1000
+const MIN_INTERVAL_MS = 120
+
+function sendJson(res, status, body) {
+  res.statusCode = status
+  res.setHeader('content-type', 'application/json; charset=utf-8')
+  res.setHeader('cache-control', 'no-store')
+  res.end(JSON.stringify(body))
+}
+
+function readBody(req) {
+  return new Promise(function (resolve) {
+    let raw = ''
+    let failed = false
+    req.on('data', function (chunk) {
+      raw += chunk
+      if (raw.length > MAX_BODY) {
+        failed = true
+        req.destroy()
+      }
+    })
+    req.on('end', function () {
+      if (failed) return resolve({})
+      try {
+        resolve(raw.length > 0 ? JSON.parse(raw) : {})
+      } catch (error) {
+        resolve({})
+      }
+    })
+    req.on('error', function () {
+      resolve({})
+    })
+  })
+}
+
+/** Method tail of the URL below ROUTE, e.g. `/dsh-tab-complete/suggest` -> `suggest`. */
+function tailOf(url) {
+  const path = String(url || '').split('?')[0]
+  return path.replace(new RegExp('^' + ROUTE + '/?'), '') || 'state'
+}
+
+/** Loopback only: this endpoint spends money, so it is not a LAN service. */
+function isLoopback(req) {
+  const address = req.socket === undefined || req.socket === null ? '' : String(req.socket.remoteAddress || '')
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
+function asText(value) {
+  return typeof value === 'string' ? value : ''
+}
+
+export function apply(ctx, rawConfig) {
+  const config = normalizeConfig(rawConfig)
+
+  const state = {
+    enabled: config.enabled,
+    requests: 0,
+    completions: 0,
+    empty: 0,
+    failures: 0,
+    calls: 0,
+    cacheHits: 0,
+    lastMs: 0,
+    lastError: '',
+    lastReason: '',
+    lastTranscript: 0,
+    lastSession: '',
+    lastProvider: '',
+    lastModel: '',
+  }
+
+  const cache = new Map()
+  const misses = new Map()
+  const inflight = new Map()
+  let lastCallAt = 0
+
+  function safeGet(key) {
+    try {
+      const value = typeof ctx.get === 'function' ? ctx.get(key) : ctx[key]
+      return value === undefined || value === null ? undefined : value
+    } catch (error) {
+      return undefined
+    }
+  }
+
+  /** The model route: explicit config first, otherwise the session default. */
+  function resolveRoute() {
+    if (config.provider.length > 0 && config.model.length > 0) {
+      return { provider: config.provider, model: config.model }
+    }
+    const owner = safeGet('agentDefaultModel')
+    if (owner !== undefined && typeof owner.currentSelection === 'function') {
+      try {
+        const selection = owner.currentSelection()
+        if (selection !== undefined && selection !== null && typeof selection.provider === 'string' && typeof selection.model === 'string') {
+          return { provider: selection.provider, model: selection.model }
+        }
+      } catch (error) {
+        // fall through
+      }
+    }
+    return undefined
+  }
+
+  /** Recent conversation tail of one live session, or [] when unavailable. */
+  function liveSession(sessionId) {
+    if (sessionId.length === 0) return undefined
+    const sessions = safeGet('sessions')
+    if (sessions === undefined || typeof sessions.get !== 'function') return undefined
+    try {
+      const session = sessions.get(sessionId)
+      if (session === undefined || session === null || !Array.isArray(session.log)) return undefined
+      return session
+    } catch (error) {
+      return undefined
+    }
+  }
+
+  /** Recent conversation tail of one live session, or [] when unavailable. */
+  function transcriptFor(sessionId) {
+    const session = liveSession(sessionId)
+    if (session === undefined) return []
+    const options = { maxMessages: config.contextMessages, maxChars: config.contextChars }
+    // `deriveMessages()` is the live projected history; the raw log is the
+    // fallback for hosts whose session objects are event-only.
+    if (typeof session.deriveMessages === 'function') {
+      try {
+        const transcript = transcriptOfMessages(session.deriveMessages(), options)
+        if (transcript.length > 0) return transcript
+      } catch (error) {
+        // fall through to the event log
+      }
+    }
+    return transcriptOf(session.log, options)
+  }
+
+  /** Last few event types, so an empty suggestion can be diagnosed. */
+  function eventTypes(sessionId) {
+    const session = liveSession(sessionId)
+    if (session === undefined) return []
+    return session.log.slice(-8).map(function (event) {
+      return event !== null && typeof event === 'object' && typeof event.type === 'string' ? event.type : '?'
+    })
+  }
+
+  /** Shape of the last few derived messages, for the same reason. */
+  function messageDigest(sessionId) {
+    const session = liveSession(sessionId)
+    if (session === undefined || typeof session.deriveMessages !== 'function') return null
+    try {
+      const messages = session.deriveMessages()
+      return messages.slice(-3).map(function (message) {
+        const content = message !== null && typeof message === 'object' && Array.isArray(message.content) ? message.content : []
+        return {
+          role: message !== null && typeof message === 'object' ? String(message.role) : '?',
+          blocks: content.map(function (block) {
+            return block !== null && typeof block === 'object' && typeof block.type === 'string' ? block.type : '?'
+          }),
+          text: textOfContent(content).slice(0, 60),
+        }
+      })
+    } catch (error) {
+      return String(error !== null && typeof error === 'object' && typeof error.message === 'string' ? error.message : error)
+    }
+  }
+
+  function cacheGet(key) {
+    const hit = cache.get(key)
+    if (hit === undefined) return undefined
+    if (Date.now() - hit.at > CACHE_TTL_MS) {
+      cache.delete(key)
+      return undefined
+    }
+    return hit.completion
+  }
+
+  function cachePut(key, completion) {
+    if (cache.size >= CACHE_LIMIT) {
+      const oldest = cache.keys().next()
+      if (!oldest.done) cache.delete(oldest.value)
+    }
+    cache.set(key, { at: Date.now(), completion: completion })
+  }
+
+  function missGet(key) {
+    const hit = misses.get(key)
+    if (hit === undefined) return false
+    if (Date.now() - hit > MISS_TTL_MS) {
+      misses.delete(key)
+      return false
+    }
+    return true
+  }
+
+  function missPut(key) {
+    if (misses.size >= CACHE_LIMIT) {
+      const oldest = misses.keys().next()
+      if (!oldest.done) misses.delete(oldest.value)
+    }
+    misses.set(key, Date.now())
+  }
+
+  /**
+   * One model call. Kept separate from the route so a future tool/CLI can reuse
+   * exactly the same prompt and sanitising.
+   * @returns {Promise<{ completion: string, raw: string }>}
+   */
+  async function complete(input) {
+    const llm = safeGet('llm')
+    if (llm === undefined || typeof llm.stream !== 'function') {
+      throw new Error('å®¿ä¸»æ²¡æœ‰å¯ç”¨çš„ llm æœåŠ¡')
+    }
+    const route = resolveRoute()
+    if (route === undefined) throw new Error('æ²¡æœ‰å¯ç”¨çš„é»˜è®¤æ¨¡åž‹')
+
+    const prompt = buildPrompt({ transcript: input.transcript, draft: input.draft })
+    const controller = new AbortController()
+    const timer = setTimeout(function () {
+      controller.abort()
+    }, config.timeoutMs)
+
+    let raw = ''
+    try {
+      const stream = llm.stream({
+        provider: route.provider,
+        model: route.model,
+        system: prompt.system,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt.user }] }],
+        temperature: config.temperature,
+        maxTokens: config.maxTokens,
+        signal: controller.signal,
+      })
+      for await (const chunk of stream) {
+        if (chunk === null || typeof chunk !== 'object') continue
+        if (chunk.type === 'text-delta') {
+          raw += typeof chunk.text === 'string' ? chunk.text : ''
+        } else if (chunk.type === 'finish' && chunk.reason !== null && typeof chunk.reason === 'object' && chunk.reason.kind === 'error') {
+          const failure = chunk.reason.failure
+          throw new Error(failure !== undefined && typeof failure.message === 'string' ? failure.message : '模型调用失败')
+        }
+      }
+    } finally {
+      clearTimeout(timer)
+    }
+
+    state.calls += 1
+    state.lastProvider = route.provider
+    state.lastModel = route.model
+    return { raw: raw, completion: sanitizeCompletion(raw, input.draft, config.maxCompletionChars) || '' }
+  }
+
+  async function suggest(req, res) {
+    if (!isLoopback(req)) return sendJson(res, 403, { ok: false, reason: 'loopback-only' })
+    if (req.method !== 'POST') return sendJson(res, 405, { ok: false, reason: 'post-only' })
+
+    const body = await readBody(req)
+    const sessionId = asText(body.sessionId)
+    const draft = asText(body.draft)
+
+    state.requests += 1
+    state.lastSession = sessionId
+    if (!state.enabled) return sendJson(res, 200, { ok: false, reason: 'disabled' })
+    if (draft.length > MAX_DRAFT) return sendJson(res, 200, { ok: false, reason: 'draft-too-long' })
+    if (draft.length < config.minDraftChars) return sendJson(res, 200, { ok: false, reason: 'draft-too-short' })
+
+    const started = Date.now()
+    const transcript = transcriptFor(sessionId)
+    state.lastTranscript = transcript.length
+    // An empty composer is only worth guessing at once there is something to
+    // guess *from*.
+    if (draft.trim().length === 0 && transcript.length === 0) {
+      state.empty += 1
+      state.lastReason = 'no-context'
+      return sendJson(res, 200, { ok: false, reason: 'no-context', types: eventTypes(sessionId), messages: messageDigest(sessionId) })
+    }
+
+    const key = sessionId + '\u0000' + draft
+    const cached = cacheGet(key)
+    if (cached !== undefined) {
+      state.cacheHits += 1
+      state.completions += 1
+      return sendJson(res, 200, {
+        ok: true,
+        completion: cached,
+        cached: true,
+        ms: Date.now() - started,
+      })
+    }
+    // A miss is worth remembering too: the client re-asks when the composer is
+    // empty, and "the model had nothing" must not cost a call every few seconds.
+    if (missGet(key)) {
+      state.empty += 1
+      state.lastReason = 'miss'
+      return sendJson(res, 200, { ok: false, reason: 'miss', cached: true })
+    }
+
+    // One in-flight call per session: a stale request must not race the fresh one.
+    const previous = inflight.get(sessionId)
+    if (previous !== undefined) {
+      try {
+        previous.abort()
+      } catch (error) {
+        // ignore
+      }
+    }
+    const gate = new AbortController()
+    inflight.set(sessionId, gate)
+
+    const wait = Math.max(0, MIN_INTERVAL_MS - (Date.now() - lastCallAt))
+    if (wait > 0) await new Promise(function (resolve) { setTimeout(resolve, wait) })
+    lastCallAt = Date.now()
+
+    try {
+      const result = await Promise.race([
+        complete({ draft: draft, transcript: transcript }),
+        new Promise(function (_resolve, reject) {
+          gate.signal.addEventListener('abort', function () {
+            reject(new Error('aborted'))
+          })
+        }),
+      ])
+      if (!result.completion) {
+        missPut(key)
+        state.empty += 1
+        state.lastReason = 'empty'
+        return sendJson(res, 200, { ok: false, reason: 'empty', raw: result.raw.slice(0, 200), types: eventTypes(sessionId), messages: messageDigest(sessionId) })
+      }
+      if (draft.trim().length === 0 && echoesAssistant(result.completion, transcript)) {
+        // The model summarised the assistant instead of predicting the user.
+        missPut(key)
+        state.empty += 1
+        state.lastReason = 'echo'
+        return sendJson(res, 200, { ok: false, reason: 'echo', raw: result.raw.slice(0, 200) })
+      }
+      cachePut(key, result.completion)
+      state.completions += 1
+      state.lastMs = Date.now() - started
+      state.lastError = ''
+      state.lastReason = ''
+      return sendJson(res, 200, {
+        ok: true,
+        completion: result.completion,
+        ms: state.lastMs,
+        provider: state.lastProvider,
+        model: state.lastModel,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (message === 'aborted') return sendJson(res, 200, { ok: false, reason: 'aborted' })
+      state.failures += 1
+      state.lastError = message
+      return sendJson(res, 200, { ok: false, reason: 'error', error: message })
+    } finally {
+      if (inflight.get(sessionId) === gate) inflight.delete(sessionId)
+    }
+  }
+
+  function describe() {
+    return {
+      ok: true,
+      plugin: { name: NAME, version: VERSION },
+      config: {
+        enabled: state.enabled,
+        debounceMs: config.debounceMs,
+        minDraftChars: config.minDraftChars,
+        maxTokens: config.maxTokens,
+        maxCompletionChars: config.maxCompletionChars,
+        contextMessages: config.contextMessages,
+        provider: config.provider,
+        model: config.model,
+      },
+      stats: Object.assign({}, state),
+    }
+  }
+
+  ctx.effect(function () {
+    const webServer = safeGet('webServer')
+    if (webServer === undefined || typeof webServer.register !== 'function') return function () {}
+
+    let dispose
+    try {
+      dispose = webServer.register({
+        kind: 'prefix',
+        path: ROUTE,
+        handler: async function (req, res) {
+          try {
+            const tail = tailOf(req.url)
+            if (tail === 'state') {
+              if (req.method !== 'GET' && req.method !== 'HEAD') {
+                return sendJson(res, 405, { ok: false, reason: 'get-only' })
+              }
+              return sendJson(res, 200, describe())
+            }
+            if (tail === 'enabled') {
+              if (!isLoopback(req)) return sendJson(res, 403, { ok: false, reason: 'loopback-only' })
+              if (req.method !== 'POST') return sendJson(res, 405, { ok: false, reason: 'post-only' })
+              const body = await readBody(req)
+              if (typeof body.enabled === 'boolean') state.enabled = body.enabled
+              return sendJson(res, 200, describe())
+            }
+            if (tail === 'suggest') return await suggest(req, res)
+            return sendJson(res, 404, { ok: false, reason: 'unknown-method' })
+          } catch (error) {
+            state.failures += 1
+            const message = error instanceof Error ? error.message : String(error)
+            state.lastError = message
+            sendJson(res, 500, { ok: false, reason: 'error', error: message })
+          }
+        },
+      })
+    } catch (error) {
+      dispose = undefined
+      state.lastError = error instanceof Error ? error.message : String(error)
+    }
+    return function () {
+      if (typeof dispose === 'function') dispose()
+    }
+  })
+
+  return {
+    config: Object.assign({}, config, { enabled: state.enabled }),
+    defaults: DEFAULT_CONFIG,
+  }
+}
+

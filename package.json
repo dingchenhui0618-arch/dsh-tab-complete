@@ -1,0 +1,58 @@
+{
+  "name": "dsh-tab-complete",
+  "version": "0.1.0",
+  "description": "Tab 补全：用模型预测你在 DeepSeek Harness 输入框里接下来要打的字，灰色幽灵文本显示，按 Tab 一键填入。",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./core": "./lib/core.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test test/*.test.mjs",
+    "prepack": "node scripts/build.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ],
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "autocomplete",
+    "tab-complete",
+    "ghost-text",
+    "composer"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dingchenhui0618-arch/dsh-tab-complete.git"
+  },
+  "homepage": "https://github.com/dingchenhui0618-arch/dsh-tab-complete#readme",
+  "bugs": {
+    "url": "https://github.com/dingchenhui0618-arch/dsh-tab-complete/issues"
+  },
+  "license": "MIT"
+}

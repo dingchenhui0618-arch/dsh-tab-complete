@@ -1,0 +1,23 @@
+# 依赖
+node_modules/
+pnpm-lock.yaml
+
+# 本地调试产物（dev server 日志、cookie jar、请求体、bridge 脚本）
+.dev/
+.dev*.log
+.dev*.log.err
+.dev*-cookies.txt
+.dev*.json
+.dev*.html
+.dev*.err
+
+# 编辑器 / 系统
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# 日志与临时文件
+*.log
+npm-debug.log*
