@@ -27,6 +27,22 @@ test('transcriptOfMessages keeps the newest exchange', () => {
   assert.equal(transcript[2].role, 'assistant')
 })
 
+test('harness scaffolding never becomes conversation', () => {
+  // Both of these arrive as ordinary user messages in the live model history.
+  // Feeding them to the predictor is what made it answer "load the typesafe-ai
+  // skill" in a conversation about a tab-completion plugin.
+  const skills = 'You have these skills:\n<available_skills>\n- `typesafe-ai`: Build AI-powered software\n</available_skills>'
+  const runtime = 'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\nCurrent working directory: "D:\\\\Projects"'
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: skills }] },
+    { role: 'user', content: [{ type: 'text', text: runtime }] },
+    { role: 'user', content: [{ type: 'text', text: '给插件加一个开关' }] },
+    { role: 'assistant', content: [{ type: 'text', text: '好，加在 config 里' }] },
+  ]
+  const transcript = transcriptOfMessages(messages)
+  assert.deepEqual(transcript.map((entry) => entry.text), ['给插件加一个开关', '好，加在 config 里'])
+})
+
 test('textOfContent keeps only text blocks', () => {
   assert.equal(textOfContent('plain'), 'plain')
   assert.equal(
@@ -114,7 +130,12 @@ test('buildPrompt marks an empty composer and includes the transcript', () => {
   assert.match(filled.user, /用户：修 bug/)
   assert.match(filled.user, /助手：修好了/)
   assert.match(filled.user, /用户当前输入：再跑/)
-  assert.match(filled.system, /输入框补全引擎/)
+  // The prompt must forbid inventing new topics: that is what makes a
+  // suggestion feel like it came from the user.
+  assert.match(filled.system, /下一句预测器/)
+  assert.match(filled.system, /不要引入对话里没出现过的新话题/)
+  assert.match(filled.system, /20–60 个字/)
+  assert.match(filled.system, /空字符串/)
 
   const empty = buildPrompt({ transcript: [], draft: '' })
   assert.match(empty.user, /这是本次对话的第一条消息/)

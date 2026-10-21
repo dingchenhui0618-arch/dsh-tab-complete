@@ -10,11 +10,15 @@
 
 | 时机 | 行为 |
 | --- | --- |
-| 你在输入框里打字 | 停手约 0.55 秒后，补全你这句话的剩余部分 |
-| 你刚发完一条消息、输入框是空的 | 基于这段对话，预测你的**下一句话**（用户口吻，不是助手口吻） |
+| 你在输入框里打字 | 停手约 0.28 秒后，把这句话补完 |
+| 你刚发完一条消息、输入框是空的 | 基于这段对话，预测你的**下一句**（用户口吻，不是助手口吻） |
 | 候选是助手刚说过的话的复述 | 直接丢弃，不显示 |
 | 你在用输入法（IME）拼字 | 不预测，避免和候选栏打架 |
 | 输入框以 `/` 开头 | 不预测，那是命令面板 |
+
+给的是**整句**而不是半句：一次 Tab 就能直接发出去，不需要你接着往下想。对话里的文件、函数、版本号会被沿用；模型编不存在的路径（`src/plugins`、`index.ts` 这种）会被提示词按住。
+
+只把「你和助手说过的话」喂给模型——技能目录、运行时上下文这类框架注入会被 `isScaffolding()` 挡掉。这很关键：它们一旦混进去就会吃光上下文预算，让预测变成对着技能列表瞎猜。
 
 ![发完一句话后预测你的下一句](docs/next-prompt.png)
 
@@ -60,10 +64,10 @@ pnpm install
   config:
     enabled: true
     debounceMs: 280        # 停手多久后请求
-    maxTokens: 32          # 生成上限
-    maxCompletionChars: 120
+    maxTokens: 96          # 生成上限（整句比半句要更多 token）
+    maxCompletionChars: 180
     contextMessages: 6     # 送给模型的历史消息条数
-    contextChars: 1600
+    contextChars: 2200
     minDraftChars: 0       # 空输入框也预测，设成 2 就要求先打两个字
     provider: ""           # 留空则用当前会话的默认模型路由
     model: ""
@@ -75,6 +79,7 @@ pnpm install
 curl.exe http://127.0.0.1:3080/dsh-tab-complete/state       # 需要浏览器同款 cookie
 curl.exe -X POST http://127.0.0.1:3080/dsh-tab-complete/enabled -d '{\"enabled\":false}'
 curl.exe "http://127.0.0.1:3080/dsh-tab-complete/transcript?sessionId=<id>"   # 这次补全真正会发给模型的对话
+curl.exe "http://127.0.0.1:3080/dsh-tab-complete/prompt?sessionId=<id>&draft=<草稿>"   # 完整 system + user 提示词
 ```
 
 ## 速度
@@ -94,7 +99,7 @@ curl.exe "http://127.0.0.1:3080/dsh-tab-complete/transcript?sessionId=<id>"   # 
 
 ## 成本与隐私
 
-- 每次预测是一次独立的小模型调用（`maxTokens: 32`，一句话），**不写进会话记录**，也不消耗 Harness 的上下文。
+- 每次预测是一次独立的小模型调用（`maxTokens: 96`，一句话），**不写进会话记录**，也不消耗 Harness 的上下文。
 - 只接受来自 loopback 的请求；请求体上限 64 KB。
 - 同样的「会话 + 草稿」结果缓存 2 分钟；"模型也没想出来"缓存 20 秒，避免空输入框反复花钱。
 - 同一会话同时只保留一个在飞请求，新请求会中断旧的。
