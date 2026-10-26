@@ -5,7 +5,9 @@ import {
   buildPrompt,
   echoesAssistant,
   joinCompletion,
+  looksLikeAssistantStep,
   normalizeConfig,
+  normalizeExample,
   sanitizeCompletion,
   sanitizePartial,
   textOfContent,
@@ -41,6 +43,56 @@ test('harness scaffolding never becomes conversation', () => {
   ]
   const transcript = transcriptOfMessages(messages)
   assert.deepEqual(transcript.map((entry) => entry.text), ['给插件加一个开关', '好，加在 config 里'])
+})
+
+test('assistant-shaped steps are not offered as the user line', () => {
+  // Measured on real sessions: these read as the helper's plan, and the user
+  // never actually typed anything like them.
+  assert.equal(looksLikeAssistantStep('先翻一下 startap 日志，确认插件是不是没加载'), true)
+  assert.equal(looksLikeAssistantStep('先把 maxTokens 调大，再看 buildPrompt'), true)
+  assert.equal(looksLikeAssistantStep('查一下 ~/.dsh/logs 最新的报错'), true)
+  // The user's own register must survive the filter.
+  assert.equal(looksLikeAssistantStep('把开关改成默认关闭'), false)
+  assert.equal(looksLikeAssistantStep('这个改动好像没生效'), false)
+  assert.equal(looksLikeAssistantStep('不对，我说的是缓存那条'), false)
+
+  assert.equal(sanitizeCompletion('先翻一下日志，确认插件有没有加载', '', 180), null)
+  assert.equal(sanitizeCompletion('把开关改成默认关闭', '', 180), '把开关改成默认关闭')
+  // Suppression can be turned off per profile.
+  assert.equal(
+    sanitizeCompletion('先翻一下日志，确认插件有没有加载', '', 180, { suppressSteps: false }),
+    '先翻一下日志，确认插件有没有加载',
+  )
+  // A draft that already says "我" makes the joined sentence the user's voice.
+  assert.equal(sanitizeCompletion('先看看日志', '我', 180), '先看看日志')
+})
+
+test('accepted suggestions become style examples, junk is dropped', () => {
+  assert.equal(normalizeExample('先把开关默认关掉'), '先把开关默认关掉')
+  assert.equal(normalizeExample('  多行\n内容  '), '多行 内容')
+  // Too short to teach anything, or a placeholder the model loves to emit.
+  assert.equal(normalizeExample('好'), '')
+  assert.equal(normalizeExample('无'), '')
+  assert.equal(normalizeExample(''), '')
+  // Harness scaffolding must never reach the prompt as a "style" of the user.
+  assert.equal(normalizeExample('<available_skills>load the typesafe-ai skill</available_skills>'), '')
+  assert.equal(normalizeExample('x'.repeat(200)), '')
+
+  const filled = buildPrompt({
+    transcript: [{ role: 'user', text: '修 bug' }, { role: 'assistant', text: '修好了' }],
+    draft: '',
+    examples: ['先把开关默认关掉', '顺便补一条 changelog'],
+  })
+  assert.match(filled.user, /按 Tab 收下的写法/)
+  assert.match(filled.user, /先把开关默认关掉/)
+
+  // A long assistant report must not dominate the transcript.
+  const long = buildPrompt({
+    transcript: [{ role: 'assistant', text: 'a'.repeat(600) + '尾巴' }],
+    draft: '',
+  })
+  assert.ok(long.user.includes('（略）'), 'long assistant reply is shortened')
+  assert.ok(long.user.includes('尾巴'), 'but its ending survives: that is what just happened')
 })
 
 test('textOfContent keeps only text blocks', () => {
@@ -85,7 +137,8 @@ test('transcriptOf drops the oldest entries first and never returns junk', () =>
 })
 
 test('sanitizeCompletion strips wrapping punctuation and the echoed draft', () => {
-  assert.equal(sanitizeCompletion('“接着写测试”', '接着'), '接着写测试'.slice(2))
+  // ("接着写测试" would now be suppressed as a step-shaped line: 接着 + 测试.)
+  assert.equal(sanitizeCompletion('“接着说说你的想法”', '接着'), '说说你的想法')
   assert.equal(sanitizeCompletion(' world', 'hello'), 'world')
   assert.equal(sanitizeCompletion('hello world', 'hello'), 'world')
   assert.equal(sanitizeCompletion('补全：然后提交', '然后'), '提交')
@@ -133,8 +186,8 @@ test('buildPrompt marks an empty composer and includes the transcript', () => {
   // The prompt must forbid inventing new topics: that is what makes a
   // suggestion feel like it came from the user.
   assert.match(filled.system, /下一句预测器/)
-  assert.match(filled.system, /不要引入对话里没出现过的新话题/)
-  assert.match(filled.system, /20–60 个字/)
+  assert.match(filled.system, /编造对话里没出现过的技术/)
+  assert.match(filled.system, /20–60 字/)
   assert.match(filled.system, /空字符串/)
 
   const empty = buildPrompt({ transcript: [], draft: '' })

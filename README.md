@@ -13,12 +13,20 @@
 | 你在输入框里打字 | 停手约 0.28 秒后，把这句话补完 |
 | 你刚发完一条消息、输入框是空的 | 基于这段对话，预测你的**下一句**（用户口吻，不是助手口吻） |
 | 候选是助手刚说过的话的复述 | 直接丢弃，不显示 |
+| 候选是「先查日志，再跑测试」这类执行步骤 | 直接丢弃——那是助手该干的事，不是你会说的话 |
 | 你在用输入法（IME）拼字 | 不预测，避免和候选栏打架 |
 | 输入框以 `/` 开头 | 不预测，那是命令面板 |
 
 给的是**整句**而不是半句：一次 Tab 就能直接发出去，不需要你接着往下想。对话里的文件、函数、版本号会被沿用；模型编不存在的路径（`src/plugins`、`index.ts` 这种）会被提示词按住。
 
 只把「你和助手说过的话」喂给模型——技能目录、运行时上下文这类框架注入会被 `isScaffolding()` 挡掉。这很关键：它们一旦混进去就会吃光上下文预算，让预测变成对着技能列表瞎猜。
+
+**它会越用越像你。** 每次你按 Tab 收下建议，那句话就被记进 `~/.dsh/tab-complete-style.json`（最多 40 条，只在本机），之后作为「他以前收下过的写法」参与提示词。看不顺眼可以清空：
+
+```bash
+curl.exe "http://127.0.0.1:3080/dsh-tab-complete/style"                       # 看记了什么
+curl.exe -X POST "http://127.0.0.1:3080/dsh-tab-complete/style" -d '{"clear":true}'   # 清空
+```
 
 ![发完一句话后预测你的下一句](docs/next-prompt.png)
 
@@ -64,11 +72,12 @@ pnpm install
   config:
     enabled: true
     debounceMs: 280        # 停手多久后请求
-    maxTokens: 96          # 生成上限（整句比半句要更多 token）
+    maxTokens: 64          # 生成上限（一句话够用；调大只会更慢）
     maxCompletionChars: 180
     contextMessages: 6     # 送给模型的历史消息条数
     contextChars: 2200
     minDraftChars: 0       # 空输入框也预测，设成 2 就要求先打两个字
+    suppressSteps: true    # 丢弃「先查日志，再跑测试」这类助手口吻的执行步骤
     provider: ""           # 留空则用当前会话的默认模型路由
     model: ""
 ```
@@ -99,14 +108,26 @@ curl.exe "http://127.0.0.1:3080/dsh-tab-complete/prompt?sessionId=<id>&draft=<�
 
 ## 成本与隐私
 
-- 每次预测是一次独立的小模型调用（`maxTokens: 96`，一句话），**不写进会话记录**，也不消耗 Harness 的上下文。
+- 每次预测是一次独立的小模型调用（`maxTokens: 64`，一句话），**不写进会话记录**，也不消耗 Harness 的上下文。
 - 只接受来自 loopback 的请求；请求体上限 64 KB。
 - 同样的「会话 + 草稿」结果缓存 2 分钟；"模型也没想出来"缓存 20 秒，避免空输入框反复花钱。
 - 同一会话同时只保留一个在飞请求，新请求会中断旧的。
+- 采纳记忆只写在 `~/.dsh/tab-complete-style.json`，不联网、不进 git，`{clear:true}` 一键清空。
+
+## 它是怎么被调的
+
+改了提示词或守卫规则，不能靠"感觉好点了"就发版。仓库外面（不提交，含私人对话）有一套离线评测：
+
+```bash
+node .dev/eval/extract.mjs   # 从本机真实会话抽「对话 + 用户真实下一句」
+node .dev/eval/judge.mjs --port 3148 --limit 20 --label v2 --prompt v2
+```
+
+`/replay` 把样本喂进同一条补全链路，另一个模型当评审打 0–10 分。0.3.0 的两个改动（口吻重写 + 步骤守卫）就是靠这组数字定的，不是拍脑袋。
 
 ## 实现要点
 
-- 宿主：`ctx.webServer.register` 四条路由；`llm.stream` 边读边转发成 SSE；历史取自 `session.deriveMessages()`（拿不到就退回事件日志的 `user/message` / `assistant/message`）。
+- 宿主：`ctx.webServer.register` 六条路由；`llm.stream` 边读边转发成 SSE；历史取自 `session.deriveMessages()`（拿不到就退回事件日志的 `user/message` / `assistant/message`）。
 - 客户端：`conversation.input.overlay` 插槽里的一个 0 高度覆盖层，绝对定位到测量出来的光标位置，字体、行高、字间距照抄编辑器，所以看起来就是「接下来要打的字」。
 - 落字走 `inputActions.insertText(text, span)`，带 `draftRev` 的 CAS：请求发出后你要是继续打字，这次补全就作废，不会插到错误的位置；CAS 失败再退回 `setDraft`。
 - <kbd>Tab</kbd> 在捕获阶段拦下并 `stopImmediatePropagation()`，编辑器的缩进逻辑看不到它，也不会误触发。
@@ -115,13 +136,14 @@ curl.exe "http://127.0.0.1:3080/dsh-tab-complete/prompt?sessionId=<id>&draft=<�
 
 - 依赖编辑器的 `data-composer-card` / `data-composer-input` 标记，Harness 大改输入框结构时需要跟着调整。
 - 幽灵文本的定位按「光标在草稿末尾」优化；多行草稿且光标在中间时，补全仍贴在最后一行末尾。
-- 模型偶尔会给出不相关的建议，这时按 <kbd>Esc</kbd> 就好——预测本身是有损的。
+- 预测本身是有损的：真实会话上的评审分在 4/10 上下（0.2.0 是 3.6）。它给的是"一个可以按 Tab 收下的下一步"，不是读心；不对就 <kbd>Esc</kbd>，或接着自己打字。
+- 守卫会误伤一小部分「先/接着 + 技术词」的合法句子（例如「接着写测试」），属于为减少噪声付的代价，可用 `suppressSteps: false` 关掉。
 
 ## 开发
 
 ```powershell
 node scripts/build.mjs      # src/ -> lib/（无依赖打包）
-node --test test/*.test.mjs # 12 个用例
+node --test test/*.test.mjs # 16 个用例
 ```
 
 `src/core.js` 是纯函数（提示词、清洗、转录裁剪），`src/host.js` 是宿主半边，`src/client.cjs` 是插槽组件，`src/client-css.cjs` 是样式。`lib/` 是构建产物，随仓库一起提交，安装时不用自己构建。

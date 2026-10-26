@@ -22,6 +22,23 @@ const CSS = require('./client-css.cjs')
 const API = '/dsh-tab-complete'
 const FALLBACK_DEBOUNCE_MS = 550
 
+/**
+ * Tell the host which sentence was just accepted. Fire and forget: a failed
+ * report must never disturb the composer.
+ * @param {string} text
+ */
+function rememberStyle(text) {
+  try {
+    fetch(API + '/style', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: text }),
+    }).catch(function () {})
+  } catch (error) {
+    // ignore: the style file is an optimisation, not a feature the user waits on
+  }
+}
+
 const DEFAULT_STATE = {
   ready: false,
   enabled: false,
@@ -552,6 +569,9 @@ function TabCompleteOverlay(props) {
           applied = false
         }
       }
+      // Accepting is the only feedback signal we get for free: remember the
+      // sentence so later suggestions copy this person's actual register.
+      if (applied && text.trim().length >= 4) rememberStyle((current.before + text).trim())
       dismiss()
     }
 
