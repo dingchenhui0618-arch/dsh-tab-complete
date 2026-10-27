@@ -1,0 +1,44 @@
+name: CI
+
+# src/ is the source of truth and lib/ is its committed build output (users
+# install the prebuilt package and must not need a build step). So the job
+# builds, runs the unit tests, and then proves the build did not change the
+# committed lib/ — a diff there means someone edited src/ without rebuilding.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No npm install: the build and the tests use only node: builtins.
+      - name: Build lib/ and run unit tests
+        run: npm test
+
+      - name: lib/ matches src/
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain -- lib)" ]; then
+            git status --porcelain -- lib
+            echo "::error::lib/ is out of date - run node scripts/build.mjs and commit the result"
+            exit 1
+          fi

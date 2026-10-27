@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### 文档与工程
+
+- 新增 [SECURITY.md](SECURITY.md)：每次补全把哪些内容（对话尾部、草稿、工作目录文件名、采纳记忆）
+  送到模型端点，`isLoopback` 到底挡了什么，`/state` 是唯一没走回环检查的端点，
+  以及 `/replay` 等价于「用你的额度发任意提示词」这条真实边界。
+- 新增 `.github/workflows/ci.yml`：ubuntu + windows × node 22/24 跑 `npm test`，
+  并断言 `lib/` 与 `src/` 构建结果一致。
+- 新增 `screenshots.json`（`docs/ghost.png`、`docs/next-prompt.png`、`docs/after-tab.png`，
+  都是真实渲染截图），市场卡片可以直接读到封面。
+- README 顶部补 CI / license 两个 badge 与一句 star 引导。
+- 不改运行逻辑、不升版本。
+
 ## 0.3.0
 
 **用真实会话量了一遍「语言不理想」到底是什么。** 做法：从本机 14 个真实会话抽出 60 个「对话 + 用户真实下一句」样本，用 `/replay` 重放补全，再让另一个模型当评审打 0–10 分（判据是「这句话像不像这个人自己会紧接着发出去」）。

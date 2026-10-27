@@ -1,8 +1,13 @@
 # dsh-tab-complete
 
+[![CI](https://github.com/dingchenhui0618-arch/dsh-tab-complete/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dingchenhui0618-arch/dsh-tab-complete/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 在 DeepSeek Harness 的输入框里，用当前对话和你已经打的字，预测你**接下来要输入的内容**：灰色幽灵文本贴在光标后面，按 <kbd>Tab</kbd> 一键填入，按 <kbd>Esc</kbd> 忽略。
 
 这是 Codex Pro「下一步输入预测」的 DeepSeek Harness 版本。区别只有一处：预测走你自己的模型路由，不吃订阅额度。
+
+> 用着还行的话，点个 ⭐ 就够了——插件市场的「搜插件」按 GitHub star 排序，star 是这个插件能被人翻到的唯一杠杆。
 
 ![输入到一半时的幽灵文本](docs/ghost.png)
 
