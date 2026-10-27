@@ -37,8 +37,20 @@ jobs:
       - name: lib/ matches src/
         shell: bash
         run: |
-          if [ -n "$(git status --porcelain -- lib)" ]; then
-            git status --porcelain -- lib
-            echo "::error::lib/ is out of date - run node scripts/build.mjs and commit the result"
-            exit 1
+          status=$(git status --porcelain --untracked-files=all -- lib)
+          if [ -z "$status" ]; then
+            echo "lib/ is up to date"
+            exit 0
           fi
+          # A Windows checkout can carry CRLF where the build writes LF; that is
+          # not a stale build. Anything else — a changed line, a new file, a
+          # deleted file — is.
+          if git diff --ignore-cr-at-eol --quiet -- lib \
+             && [ -z "$(printf '%s\n' "$status" | grep -v '^ M lib/')" ]; then
+            echo "only line-ending differences from the checkout; content matches"
+            exit 0
+          fi
+          printf '%s\n' "$status"
+          git diff --ignore-cr-at-eol -- lib
+          echo "::error::lib/ is out of date - run node scripts/build.mjs and commit the result"
+          exit 1
