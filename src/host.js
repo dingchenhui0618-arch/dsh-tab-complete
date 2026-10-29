@@ -669,6 +669,11 @@ export function apply(ctx, rawConfig) {
               return sendJson(res, 200, {
                 ok: true,
                 completion: result.completion,
+                // The pre-sanitised reply: replay is a loopback-only debug
+                // route, and seeing what the model actually said (several
+                // candidates, a step-shaped line that got filtered) is the
+                // whole point of it.
+                raw: result.raw.slice(0, 600),
                 provider: state.lastProvider,
                 model: state.lastModel,
                 ms: Date.now() - started,
