@@ -12,6 +12,8 @@
 - 新增 `screenshots.json`（`docs/ghost.png`、`docs/next-prompt.png`、`docs/after-tab.png`，
   都是真实渲染截图），市场卡片可以直接读到封面。
 - README 顶部补 CI / license 两个 badge 与一句 star 引导。
+- 改正 README 的换模型指引：原来推荐的 `glm-5.3-flash` 是推理型模型，`maxTokens` 64 会被思考吃光，
+  实测 10 个样本全部返回空（表现是「一次都不出幽灵」而不是慢）。补充了「用 `/replay` 先验一次」的办法。
 - 不改运行逻辑、不升版本。
 
 ## 0.3.0

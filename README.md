@@ -100,14 +100,22 @@ curl.exe "http://127.0.0.1:3080/dsh-tab-complete/prompt?sessionId=<id>&draft=<�
 
 一次建议 = 静默时间（默认 280ms）+ 模型首 token 延迟。第二段来自模型本身，插件替不了它；所以补全走**流式**：第一个 token 到达就把幽灵画出来，之后逐字长出来，而不是等整句生成完再一次性出现。
 
-如果仍然嫌慢，把补全指到更快的模型上（不影响主会话）：
+如果仍然嫌慢，可以给补全单独指定路由（不影响主会话）：
 
 ```yaml
 - id: dsh-tab-complete
   config:
-    provider: chenyuzhiyun
-    model: glm-5.3-flash
+    provider: <provider>
+    model: <model>
 ```
+
+**别用推理型模型。** 它们会先把 token 花在思考上，`maxTokens: 64` 全部被吃掉，流里一个可显示的字都没有——表现是「一次都不出幽灵」，不是慢。实测 `glm-5.3-flash`、`qwen3.7-plus` 就是这样，`deepseek-flash` 这类直出模型的 p50 约 2.4 秒。要换模型，先跑一次：
+
+```
+curl.exe -X POST "http://127.0.0.1:3080/dsh-tab-complete/replay" -H "content-type: application/json" -d "{\"messages\":[{\"role\":\"user\",\"text\":\"你好\"}],\"draft\":\"\",\"provider\":\"<provider>\",\"model\":\"<model>\"}"
+```
+
+返回里 `completion` 为空就说明这个模型不能用。
 
 同一「会话 + 草稿」在缓存里命中是 0 延迟；`GET /dsh-tab-complete/state` 里的 `lastMs` 就是上一次真实耗时。
 
