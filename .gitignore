@@ -29,3 +29,7 @@ npm-debug.log*
 .env
 .env.*
 !.env.example
+
+# 评测产物：含真实对话文本，只留本机
+eval/cases.json
+eval/last-*.json

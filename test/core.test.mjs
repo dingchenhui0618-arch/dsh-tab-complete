@@ -10,6 +10,7 @@ import {
   normalizeExample,
   sanitizeCompletion,
   sanitizePartial,
+  splitFirstClause,
   textOfContent,
   transcriptOf,
   transcriptOfMessages,
@@ -93,6 +94,22 @@ test('accepted suggestions become style examples, junk is dropped', () => {
   })
   assert.ok(long.user.includes('（略）'), 'long assistant reply is shortened')
   assert.ok(long.user.includes('尾巴'), 'but its ending survives: that is what just happened')
+})
+
+test('a partial accept stops after the first clause', () => {
+  assert.deepEqual(splitFirstClause('我看看效果，偏左还是偏下'), { word: '我看看效果，', rest: '偏左还是偏下' })
+  assert.deepEqual(splitFirstClause('改好了。下一轮再看'), { word: '改好了。', rest: '下一轮再看' })
+  assert.deepEqual(splitFirstClause('顺便把 changelog 也补上'), { word: '顺便把', rest: 'changelog 也补上' })
+  // One clause: there is nothing smaller to take, so it equals Tab.
+  assert.deepEqual(splitFirstClause('把开关改成默认关闭'), { word: '把开关改成默认关闭', rest: '' })
+  // A ghost that continues the current clause opens with punctuation: that
+  // mark belongs to the sentence already typed, not to the cut.
+  assert.deepEqual(splitFirstClause('，以及哪些场景还补不出来，别只讲原理'), {
+    word: '，以及哪些场景还补不出来，',
+    rest: '别只讲原理',
+  })
+  assert.deepEqual(splitFirstClause('，好'), { word: '，好', rest: '' })
+  assert.deepEqual(splitFirstClause(''), { word: '', rest: '' })
 })
 
 test('textOfContent keeps only text blocks', () => {

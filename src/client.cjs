@@ -226,6 +226,10 @@ function TabCompleteOverlay(props) {
   const abortRef = React.useRef(null)
   const composingRef = React.useRef(false)
   const dismissedRef = React.useRef(null)
+  // A partially accepted ghost: the draft it belongs to and what is left of it.
+  // Without this the draft change would trigger a fresh ask and the remainder
+  // would be replaced mid-edit.
+  const stickyRef = React.useRef(null)
   // Empty-composer asks are the expensive kind: keep a floor between them so a
   // busy UI can never turn into a model-call storm.
   const emptyAskRef = React.useRef(0)
@@ -276,6 +280,13 @@ function TabCompleteOverlay(props) {
 
   // Ask for a prediction.
   React.useEffect(function () {
+    // A remainder from a partial accept is already an answer for this draft.
+    const sticky = stickyRef.current
+    if (sticky !== null && sticky.draft === draft) {
+      setSuggestion({ text: sticky.text, before: sticky.draft })
+      return undefined
+    }
+    stickyRef.current = null
     setSuggestion(null)
     if (!state.ready || !state.enabled) return undefined
     if (phase !== 'plain') return undefined
@@ -513,8 +524,52 @@ function TabCompleteOverlay(props) {
       seqRef.current += 1
       // Escape means "not now": do not let the observer immediately re-ask.
       dismissedRef.current = draftRef.current
+      stickyRef.current = null
       setSuggestion(null)
       setView(null)
+    }
+
+    /**
+     * Splice one clause of the ghost in at the caret and keep the rest as the
+     * new ghost. Returns true when something was inserted.
+     */
+    function acceptOneClause(current) {
+      const parts = splitFirstClause(current.text)
+      if (parts.word.length === 0) return false
+      const text = joinCompletion(current.before, parts.word)
+      let span = null
+      try {
+        span = inputActions.captureInsertion()
+      } catch (error) {
+        span = null
+      }
+      let applied = false
+      if (span !== null && span !== undefined) {
+        try {
+          applied = inputActions.insertText(text, span) === true
+        } catch (error) {
+          applied = false
+        }
+      }
+      if (!applied) {
+        try {
+          inputActions.setDraft(current.before + text)
+          applied = true
+        } catch (error) {
+          applied = false
+        }
+      }
+      if (!applied) return false
+      const nextDraft = current.before + text
+      if (parts.rest.length === 0) {
+        if (nextDraft.trim().length >= 4) rememberStyle(nextDraft.trim())
+        dismiss()
+        return true
+      }
+      // Keep the remainder alive across the draft change the insertion caused.
+      stickyRef.current = { draft: nextDraft, text: parts.rest }
+      setSuggestion({ text: parts.rest, before: nextDraft })
+      return true
     }
 
     function onKeyDown(event) {
@@ -530,6 +585,18 @@ function TabCompleteOverlay(props) {
 
       if (event.key === 'Escape') {
         dismiss()
+        return
+      }
+      if (event.key === 'ArrowRight' && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
+        if (event.isComposing || composingRef.current) return
+        const box = root.closest('[data-composer-card]')
+        if (box === null) return
+        if (!(event.target instanceof Node) || !box.contains(event.target)) return
+        if (acceptOneClause(current)) {
+          event.preventDefault()
+          event.stopPropagation()
+          event.stopImmediatePropagation()
+        }
         return
       }
       if (event.key !== 'Tab') return
@@ -604,6 +671,11 @@ function TabCompleteOverlay(props) {
         },
         view.text,
         h('kbd', { className: 'tc-kbd' }, 'Tab'),
+        // Only shown when it would do something Tab does not: take the first
+        // clause and leave the rest as the new ghost.
+        splitFirstClause(view.text).rest.length > 0
+          ? h('kbd', { className: 'tc-kbd' }, 'Alt+→')
+          : null,
       ),
     )
   }
@@ -612,6 +684,20 @@ function TabCompleteOverlay(props) {
 }
 
 /** Caret-join rule, duplicated from core.js because the client bundle carries no relative imports. */
+function splitFirstClause(text) {
+  if (typeof text !== 'string' || text.length === 0) return { word: '', rest: '' }
+  const limit = Math.min(text.length, 16)
+  // From 1: a ghost that opens with "，" continues the current clause.
+  for (let i = 1; i < limit; i += 1) {
+    if (/[，,、；;。！!？?：:]/.test(text.charAt(i))) {
+      return { word: text.slice(0, i + 1), rest: text.slice(i + 1).replace(/^\s+/, '') }
+    }
+  }
+  const space = text.indexOf(' ')
+  if (space > 0 && space <= 12) return { word: text.slice(0, space), rest: text.slice(space + 1) }
+  return { word: text, rest: '' }
+}
+
 function joinCompletion(before, completion) {
   const text = typeof completion === 'string' ? completion : ''
   if (text.length === 0) return ''

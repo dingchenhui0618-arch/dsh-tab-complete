@@ -3,13 +3,25 @@
 [![CI](https://github.com/dingchenhui0618-arch/dsh-tab-complete/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dingchenhui0618-arch/dsh-tab-complete/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-在 DeepSeek Harness 的输入框里，用当前对话和你已经打的字，预测你**接下来要输入的内容**：灰色幽灵文本贴在光标后面，按 <kbd>Tab</kbd> 一键填入，按 <kbd>Esc</kbd> 忽略。
+在 DeepSeek Harness 的输入框里，用当前对话和你已经打的字，预测你**接下来要输入的内容**：灰色幽灵文本贴在光标后面，按 <kbd>Tab</kbd> 一键填入，按 <kbd>Alt</kbd>+<kbd>→</kbd> 只收第一句，按 <kbd>Esc</kbd> 忽略。
 
 这是 Codex Pro「下一步输入预测」的 DeepSeek Harness 版本。区别只有一处：预测走你自己的模型路由，不吃订阅额度。
 
 > 用着还行的话，点个 ⭐ 就够了——插件市场的「搜插件」按 GitHub star 排序，star 是这个插件能被人翻到的唯一杠杆。
 
 ![输入到一半时的幽灵文本](docs/ghost.png)
+
+## 三个键
+
+| 键 | 作用 |
+| --- | --- |
+| <kbd>Tab</kbd> | 整句收下（最快的路径：一次按键，直接可发） |
+| <kbd>Alt</kbd>+<kbd>→</kbd> | 只收第一句，剩下的继续当幽灵；一句一句往下收，改起来比整段删掉轻松 |
+| <kbd>Esc</kbd> | 丢掉这条，本轮不再问 |
+
+<kbd>Alt</kbd>+<kbd>→</kbd> 只在建议里确实还有第二句时才提示（幽灵后面会多一个 `Alt+→` 小标签），单句建议按了等同于 <kbd>Tab</kbd>，不会误伤。
+
+![建议里有两句时，Tab 和 Alt+→ 两个提示都出现](docs/alt-accept.png)
 
 ## 它什么时候会给建议
 
@@ -38,6 +50,33 @@ curl.exe -X POST "http://127.0.0.1:3080/dsh-tab-complete/style" -d '{"clear":tru
 按 <kbd>Tab</kbd> 之后：幽灵文本变成真正的文字，光标停在末尾，接着就能改。
 
 ![按 Tab 后的结果](docs/after-tab.png)
+
+## 和同类比，数字说话
+
+这个品类在 DSH 市场里已经很挤：截至 2026-11，公开的「预测下一句 + 幽灵文本 + Tab 收下」插件**至少有 16 个**。挑几个最能打的：
+
+| 插件 | 星 | 它的长处 |
+| --- | --- | --- |
+| [Lphehe/dsh-composer-assist](https://github.com/Lphehe/dsh-composer-assist) | 17 | 设置面板：自动/逐词/两者/仅手动、建议栏或行内、置信度门槛、接受学习（默认关） |
+| [Xiaofei-fei/dsh-prompt-history](https://github.com/Xiaofei-fei/dsh-prompt-history) | 10 | 终端式输入框：↑/↓ 历史、前缀搜索、Ctrl+R，外带预测 |
+| [studyzy/dsh-suggest-prompt](https://github.com/studyzy/dsh-suggest-prompt) | 7 | 工程最完整：脱敏、语义过滤（助手口吻直接丢弃）、负缓存、快捷键录制 |
+| [Stijnus/dsh-composer-predictions](https://github.com/Stijnus/dsh-composer-predictions) | 2 | `Alt+↑/↓` 换候选 + 草稿内联补全 |
+
+它们都比这个插件**功能多**。这个插件只在三件事上不一样：
+
+1. **给数字，而不是给形容词。** 同类 README 里几乎找不到效果数据（[一家的 README 直接写](https://github.com/Somnus678/dsh-input-assistant) `not_evaluated`：「60 条质量集尚未跑完，不能证明优于同类」）。下面这张表是本插件在真实会话上跑出来的，方法在「它是怎么被调的」一节，可复跑。
+2. **会主动闭嘴。** 开头是执行动词、又带技术对象（日志/配置/测试/文件…）或「先…，再…」计划的预测不显示——那是助手该干的活。实测这类占 13%，平均 2.21 分，且没有误伤任何一条高分预测。
+3. **空输入框也能一次 Tab 发出去**，而且和「打了一半」共用同一条链路（部分同类只做其中一种）。
+
+实测（真实会话样本，另一模型当评审打 0–10 分，判据是「这句话像不像你本人会紧接着发出来」）：
+
+| 场景 | 平均分 | 及格（≥7） | 说明 |
+| --- | --- | --- | --- |
+| 空输入框，猜你下一句 | **≈3** | 0 / 15 | 收到结果后你往往直接换话题，模型没有依据 |
+| 你已经打了几个字 | **≈4.7** | 2 / 15 | 方向被你限定住了，这才是它擅长的 |
+| 0.2.0 旧版（不分场景） | 3.6 | 1–2 / 20 | 提示词里混进了框架注入，在对着技能目录瞎猜 |
+
+也测了「多给几条候选、挑最好的」这条路：3 条候选里最好那条平均只有 **3.33** 分，36 个候选 0 个及格。所以这个插件没做候选轮换——方向错不是多给几次机会能救的，不如用 <kbd>Alt</kbd>+<kbd>→</kbd> 让你改得轻松。
 
 ## 安装
 
@@ -129,14 +168,16 @@ curl.exe -X POST "http://127.0.0.1:3080/dsh-tab-complete/replay" -H "content-typ
 
 ## 它是怎么被调的
 
-改了提示词或守卫规则，不能靠"感觉好点了"就发版。仓库外面（不提交，含私人对话）有一套离线评测：
+改了提示词或守卫规则，不能靠"感觉好点了"就发版。`eval/` 里有一套可复跑的离线评测（说明见 [eval/README.md](eval/README.md)）：
 
 ```bash
-node .dev/eval/extract.mjs   # 从本机真实会话抽「对话 + 用户真实下一句」
-node .dev/eval/judge.mjs --port 3148 --limit 20 --label v2 --prompt v2
+node eval/extract.mjs                                  # 从本机真实会话抽「对话 + 用户真实下一句」
+node eval/judge.mjs --port 3080 --limit 20 --label v2  # 重放真实链路 + 评审模型打 0-10 分
 ```
 
-`/replay` 把样本喂进同一条补全链路，另一个模型当评审打 0–10 分。0.3.0 的两个改动（口吻重写 + 步骤守卫）就是靠这组数字定的，不是拍脑袋。
+`/replay` 把样本喂进同一条补全链路（守卫、净化、步骤过滤都在里面），另一个模型当评审，判据是「这句话像不像你本人会紧接着发出来」。0.3.0 的两个改动（口吻重写 + 步骤守卫）和 0.4.0 的取舍（不做候选轮换）都是靠这组数字定的，不是拍脑袋。
+
+`eval/cases.json` 和 `eval/last-*.json` 含你的真实对话，已 gitignore，永远留在本机。
 
 ## 实现要点
 
@@ -164,7 +205,7 @@ node .dev/eval/judge.mjs --port 3148 --limit 20 --label v2 --prompt v2
 
 ```powershell
 node scripts/build.mjs      # src/ -> lib/（无依赖打包）
-node --test test/*.test.mjs # 16 个用例
+node --test test/*.test.mjs # 17 个用例
 ```
 
 `src/core.js` 是纯函数（提示词、清洗、转录裁剪），`src/host.js` 是宿主半边，`src/client.cjs` 是插槽组件，`src/client-css.cjs` 是样式。`lib/` 是构建产物，随仓库一起提交，安装时不用自己构建。
