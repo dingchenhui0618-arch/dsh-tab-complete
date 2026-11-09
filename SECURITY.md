@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | `GET /dsh-tab-complete/state` | 能连上 DSH web server 的人 | **没有**（这是唯一一条没走 loopback 检查的端点，见下） |
 | `POST /suggest`、`POST /replay` | 本机进程（`127.0.0.1` / `::1`） | 只有回环判断 |
-| `POST /enabled`、`GET /prompt`、`GET|POST /style`、`GET /transcript` | 本机进程 | 只有回环判断 |
+| `POST /enabled`、`GET /prompt`、`GET|POST /style`、`POST /event`、`GET /transcript` | 本机进程 | 只有回环判断 |
 | 客户端半边（`conversation.input.overlay` 插槽） | 你打开的 DSH Web 页面 | 无（页面本身无认证） |
 
 **视为不可信输入的：**
@@ -48,13 +48,16 @@
 - **写**：只有 `<家目录>/.dsh/tab-complete-style.json`——你**采纳过的句子**（最多 40 条，
   `normalizeExample` 去重后追加，1.5 秒防抖落盘）。`POST /style {clear:true}` 写回 `[]`。
   文件是明文、不设权限位；它留在本机、不进 git、不上传（除非你自己把它贴出去）。
+  另一个文件 `<家目录>/.dsh/tab-complete-stats.json` 只有六个整数（收了 / 收一句 / 按 Esc
+  各多少次，以及字数累加），没有任何文本内容。
 - **读**：内存里的会话对象（`sessions.get(id)` 的 `log` / `deriveMessages()`）、
   当前工作目录的**文件名列表**、上面那个 style 文件。
 - **网络出口（重要）**：插件自身不发任何 HTTP 请求，但它**驱动宿主去调模型**——
   每次补全把下面这些交给配置的 `provider`/`model`：系统提示词、最近 N 条对话的裁剪版、
   当前草稿、工作目录顶层文件名、最近 6 条采纳过的句子。**目标端点由你的模型路由决定**，
   可能不是官方 API；插件不知道也不控制那一跳的隐私策略。
-- **遥测**：无。计数器只在内存里，供面板与 `/state` 读。
+- **遥测**：没有任何外发。计数器（收下 / 收一句 / 按 Esc 的次数与字数）写在
+  `<家目录>/.dsh/tab-complete-stats.json`，只有整数，跨重启保留，删掉文件即清零。
 - **模型上下文**：补全不走会话、不写会话记录、不占 Harness 的上下文预算（README 的口径）。
 
 ## 已知限制（真实取舍，不是 bug）

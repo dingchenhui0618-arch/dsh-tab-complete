@@ -38,7 +38,7 @@
 
 只把「你和助手说过的话」喂给模型——技能目录、运行时上下文这类框架注入会被 `isScaffolding()` 挡掉。这很关键：它们一旦混进去就会吃光上下文预算，让预测变成对着技能列表瞎猜。
 
-**它会越用越像你。** 每次你按 Tab 收下建议，那句话就被记进 `~/.dsh/tab-complete-style.json`（最多 40 条，只在本机），之后作为「他以前收下过的写法」参与提示词。看不顺眼可以清空：
+**它会越用越像你。** 每次你按 Tab 收下建议，那句话就被记进 `~/.dsh/tab-complete-style.json`（最多 40 条，只在本机），之后作为「他以前收下过的写法」参与提示词。同一句话收下第二次、只是尾巴更长时，会替换旧的那条而不是占两个槽位（实测 40 条里有 5 对是这种重复，占掉 25% 预算）。看不顺眼可以清空：
 
 ```bash
 curl.exe "http://127.0.0.1:3080/dsh-tab-complete/style"                       # 看记了什么
@@ -165,6 +165,27 @@ curl.exe -X POST "http://127.0.0.1:3080/dsh-tab-complete/replay" -H "content-typ
 - 同样的「会话 + 草稿」结果缓存 2 分钟；"模型也没想出来"缓存 20 秒，避免空输入框反复花钱。
 - 同一会话同时只保留一个在飞请求，新请求会中断旧的。
 - 采纳记忆只写在 `~/.dsh/tab-complete-style.json`，不联网、不进 git，`{clear:true}` 一键清空。
+- 使用计数只在 `~/.dsh/tab-complete-stats.json`：收了 / 收一句 / 按 Esc 各多少次，没有别的。
+
+## 它到底有没有用：线上计数
+
+离线评测回答「改得对不对」，线上计数回答「这几天值不值」。所有幽灵被怎么处理都会被记下来，跨重启保留：
+
+```bash
+curl.exe http://127.0.0.1:3080/dsh-tab-complete/state
+```
+
+```json
+"events": { "shown": 128, "accepted": 31, "partial": 9, "dismissed": 6,
+            "acceptRate": 0.24, "partialRate": 0.07, "dismissRate": 0.05, "acceptAvgChars": 23 }
+```
+
+- `shown`：真的显示到你眼前的建议数（分母）。
+- `accepted` / `partial`：整句按 Tab 收 / 按 <kbd>Alt</kbd>+<kbd>→</kbd> 只收一句的次数。
+- `dismissed`：按 <kbd>Esc</kbd> 扔掉的次数 —— 这个数才是「它烦人」的程度。
+- `acceptAvgChars`：收下的平均长度，短到 10 字以下说明建议在给你废话。
+
+客户端通过 `POST /dsh-tab-complete/event {type, chars}` 上报，只收 loopback，别的什么都不记。
 
 ## 它是怎么被调的
 
@@ -175,7 +196,9 @@ node eval/extract.mjs                                  # 从本机真实会话�
 node eval/judge.mjs --port 3080 --limit 20 --label v2  # 重放真实链路 + 评审模型打 0-10 分
 ```
 
-`/replay` 把样本喂进同一条补全链路（守卫、净化、步骤过滤都在里面），另一个模型当评审，判据是「这句话像不像你本人会紧接着发出来」。0.3.0 的两个改动（口吻重写 + 步骤守卫）和 0.4.0 的取舍（不做候选轮换）都是靠这组数字定的，不是拍脑袋。
+``/replay` 把样本喂进同一条补全链路（守卫、净化、步骤过滤都在里面），另一个模型当评审，判据是「这句话像不像你本人会紧接着发出来」。0.3.0 的两个改动（口吻重写 + 步骤守卫）和 0.4.0 的取舍（不做候选轮换）都是靠这组数字定的，不是拍脑袋。
+
+0.4.1 也用它否掉了一个看起来很有道理的想法：按 40 条真实采纳记录总结出的「他只下指令、几乎不问问题、句子常以约束结尾」写成提示词补充，两轮 20 条对比下来 **4.31 → 4.13**（两轮分别 4.06/4.32 与 4.55/3.94，方向不一致），是噪声，所以没进版本。凭直觉这一步就发出去了。
 
 `eval/cases.json` 和 `eval/last-*.json` 含你的真实对话，已 gitignore，永远留在本机。
 
@@ -205,7 +228,7 @@ node eval/judge.mjs --port 3080 --limit 20 --label v2  # 重放真实链路 + �
 
 ```powershell
 node scripts/build.mjs      # src/ -> lib/（无依赖打包）
-node --test test/*.test.mjs # 17 个用例
+node --test test/*.test.mjs # 18 个用例
 ```
 
 `src/core.js` 是纯函数（提示词、清洗、转录裁剪），`src/host.js` 是宿主半边，`src/client.cjs` 是插槽组件，`src/client-css.cjs` 是样式。`lib/` 是构建产物，随仓库一起提交，安装时不用自己构建。

@@ -8,7 +8,7 @@
 //   - completion sanitising and caret joining.
 
 export const NAME = 'dsh-tab-complete'
-export const VERSION = '0.4.0'
+export const VERSION = '0.4.1'
 export const ROUTE = '/dsh-tab-complete'
 
 /** Every knob the plugin owns, with the shipped defaults. */
@@ -472,6 +472,37 @@ export function sanitizePartial(raw, maxChars, options) {
 
 /** Clauses end here; a partial accept stops after the first one. */
 const CLAUSE_END = /[，,、；;。！!？?：:]/
+
+/**
+ * Add one accepted line to the style memory, dropping what it supersedes.
+ *
+ * Accepting the same sentence twice — the second time with a clause appended —
+ * used to store both versions, so a 40-slot budget held far fewer than 40 ways
+ * of speaking. When one line is a long prefix of the other, the longer wins:
+ * it is what the person actually sent.
+ * @param {readonly string[]} examples current list, oldest first
+ * @param {string} text newly accepted text
+ * @param {number} [limit]
+ * @returns {string[]}
+ */
+export function mergeStyleExample(examples, text, limit) {
+  const cap = Number.isInteger(limit) && limit > 0 ? limit : 40
+  const list = Array.isArray(examples) ? examples.slice() : []
+  const clean = normalizeExample(text)
+  if (clean.length === 0) return list
+  const kept = list.filter(function (entry) {
+    if (typeof entry !== 'string' || entry.length === 0) return false
+    if (entry === clean) return false
+    const shorter = entry.length <= clean.length ? entry : clean
+    const longer = entry.length <= clean.length ? clean : entry
+    // A fragment ("好的") proving nothing; a real sentence that the new one
+    // starts with is the same instruction, re-sent with a clause appended.
+    if (shorter.length < 10) return true
+    return !longer.startsWith(shorter)
+  })
+  kept.push(clean)
+  return kept.slice(-cap)
+}
 
 /**
  * Where a partial accept should cut.

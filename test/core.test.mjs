@@ -6,6 +6,7 @@ import {
   echoesAssistant,
   joinCompletion,
   looksLikeAssistantStep,
+  mergeStyleExample,
   normalizeConfig,
   normalizeExample,
   sanitizeCompletion,
@@ -94,6 +95,28 @@ test('accepted suggestions become style examples, junk is dropped', () => {
   })
   assert.ok(long.user.includes('（略）'), 'long assistant reply is shortened')
   assert.ok(long.user.includes('尾巴'), 'but its ending survives: that is what just happened')
+})
+
+test('a re-accepted sentence replaces the shorter version it extends', () => {
+  const first = '那就把四段案例文案都写进 HTML，折叠保留就行，别移除'
+  const longer = '那就把四段案例文案都写进 HTML，折叠保留就行，别移除，改完我验一下抓取效果'
+  const one = mergeStyleExample([], first, 40)
+  assert.deepEqual(one, [first])
+  const two = mergeStyleExample(one, longer, 40)
+  assert.deepEqual(two, [longer])
+  // A long tail still supersedes: the prefix is the same instruction.
+  const tail = mergeStyleExample(['用几天再说，先别急着删 Alt+→，这个组合我本来就习惯用'], '用几天再说，先别急着删 Alt+→，这个组合我本来就习惯用现在的问题是 /state 还显示 0.3.0', 40)
+  assert.equal(tail.length, 1)
+  // Different sentences coexist.
+  const three = mergeStyleExample(two, '把这个开关默认关掉', 40)
+  assert.equal(three.length, 2)
+  // The cap still applies.
+  let list = []
+  for (let i = 0; i < 6; i += 1) list = mergeStyleExample(list, '第' + i + '条完全不同的句子内容', 5)
+  assert.equal(list.length, 5)
+  // Short prefixes are not treated as duplicates.
+  const short = mergeStyleExample(['好的'], '好的，那就这样', 40)
+  assert.equal(short.length, 2)
 })
 
 test('a partial accept stops after the first clause', () => {
